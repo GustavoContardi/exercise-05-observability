@@ -1,13 +1,45 @@
+import time
 from datetime import datetime, timezone
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from src.database import Base, engine, get_db
 from src.models import Node
 from src.schemas import NodeCreate, NodeResponse, NodeUpdate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"],
+)
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency",
+    ["method", "endpoint"],
+)
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - start
+    endpoint = request.url.path
+    REQUEST_COUNT.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code
+    ).inc()
+    REQUEST_LATENCY.labels(method=request.method, endpoint=endpoint).observe(elapsed)
+    return response
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
@@ -18,6 +50,7 @@ def health(db: Session = Depends(get_db)):
         db_status = "disconnected"
     count = db.query(Node).filter(Node.status == "active").count()
     return {"status": "ok", "db": db_status, "nodes_count": count}
+
 
 @app.post("/api/nodes", response_model=NodeResponse, status_code=201)
 def register_node(node: NodeCreate, db: Session = Depends(get_db)):
@@ -30,9 +63,11 @@ def register_node(node: NodeCreate, db: Session = Depends(get_db)):
     db.refresh(db_node)
     return db_node
 
+
 @app.get("/api/nodes", response_model=list[NodeResponse])
 def list_nodes(db: Session = Depends(get_db)):
     return db.query(Node).all()
+
 
 @app.get("/api/nodes/{name}", response_model=NodeResponse)
 def get_node(name: str, db: Session = Depends(get_db)):
@@ -40,6 +75,7 @@ def get_node(name: str, db: Session = Depends(get_db)):
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     return node
+
 
 @app.put("/api/nodes/{name}", response_model=NodeResponse)
 def update_node(name: str, update: NodeUpdate, db: Session = Depends(get_db)):
@@ -54,6 +90,7 @@ def update_node(name: str, update: NodeUpdate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(node)
     return node
+
 
 @app.delete("/api/nodes/{name}", status_code=204)
 def delete_node(name: str, db: Session = Depends(get_db)):
