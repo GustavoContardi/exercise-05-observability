@@ -34,11 +34,10 @@ services:
       - api
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.3.0
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -46,6 +45,12 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   node-exporter:
     image: prom/node-exporter:latest
